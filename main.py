@@ -1,25 +1,22 @@
 # main.py
 
 import os
-from dotenv import load_dotenv
-import discord
-from discord.ext import commands
 import random
 import datetime
 import asyncio
-from flask import Flask
 from threading import Thread
 
-# === Load environment variables from .env (local) ===
+from dotenv import load_dotenv
+from flask import Flask
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+# === Charge les variables de .env pour le dev local ===
 load_dotenv()
 
-# === Discord Bot Setup ===
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-bot = commands.Bot(command_prefix="/", intents=intents)
-
-# === Data Structures ===
+# === Structures globales pour XP, temps et batailles ===
 credits = {}
 last_quiz_time = {}
 last_quest_time = {}
@@ -114,117 +111,99 @@ malus_messages = [
     "{name} slipped on grease — -1 XP and loses their next action!"
 ]
 
-# === Helper Functions ===
-def add_credits(user_id, amount):
+# === Helpers pour gérer les XP et rôles ===
+def add_credits(user_id: int, amount: int):
     credits[user_id] = credits.get(user_id, 0) + amount
 
-def get_credits(user_id):
+def get_credits(user_id: int) -> int:
     return credits.get(user_id, 0)
 
-async def remove_role_later(member, role, delay_seconds):
-    await asyncio.sleep(delay_seconds)
+async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
+    await asyncio.sleep(delay)
     await member.remove_roles(role)
 
-# === Quiz Command ===
-@bot.command()
-async def quiz(ctx):
-    now = datetime.datetime.utcnow()
-    last = last_quiz_time.get(ctx.author.id)
-    if last and (now - last).total_seconds() < 86400:
-        return await ctx.send("⏳ You can only do the quiz once every 24 hours.")
-    q = random.choice(quiz_questions)
-    await ctx.send(f"🧠 Quiz Time!\n{q['question']}")
-    def check(m): return m.author == ctx.author and m.channel == ctx.channel
-    try:
-        m = await bot.wait_for("message", check=check, timeout=60)
-        if m.content.lower().strip() == q["answer"].lower().strip():
-            add_credits(ctx.author.id, 5)
-            last_quiz_time[ctx.author.id] = now
-            await ctx.send(f"✅ Correct! +5 XP (Total: {get_credits(ctx.author.id)} XP)")
-        else:
-            await ctx.send("❌ Incorrect. Try again tomorrow!")
-    except asyncio.TimeoutError:
-        await ctx.send("⌛ Time’s up! You had 60 seconds to answer.")
+# === Classe custom pour forcer le sync des slash commands ===
+class MyBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        super().__init__(command_prefix="/", intents=intents)
 
-# === Quest Command (once per day) ===
-@bot.command()
-async def quest(ctx):
+    async def setup_hook(self):
+        # Synchronise toutes les slash commands automatiquement
+        await self.tree.sync()
+        print("🔄 All slash commands have been synced!")
+
+bot = MyBot()
+
+# === Slash command: /start (juste pour confirmation) ===
+@bot.tree.command(name="start", description="Check if the bot is online")
+async def slash_start(interaction: discord.Interaction):
+    await interaction.response.send_message("✅ MYİKKİ Bot is up and running!")
+
+# === Slash command: /quiz ===
+@bot.tree.command(name="quiz", description="Take your daily MYİKKİ quiz")
+async def slash_quiz(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
-    last = last_quest_time.get(ctx.author.id)
+    last = last_quiz_time.get(interaction.user.id)
     if last and (now - last).total_seconds() < 86400:
-        return await ctx.send("⏳ Only one daily quest allowed per 24 h.")
+        await interaction.response.send_message("⏳ You can only do the quiz once every 24 hours.", ephemeral=True)
+        return
+
+    q = random.choice(quiz_questions)
+    await interaction.response.send_message(f"🧠 Quiz Time!\n**{q['question']}**")
+    
+    def check(m: discord.Message):
+        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
+
+    try:
+        m = await bot.wait_for("message", timeout=60, check=check)
+        if m.content.lower().strip() == q["answer"].lower().strip():
+            add_credits(interaction.user.id, 5)
+            last_quiz_time[interaction.user.id] = now
+            await interaction.followup.send(f"✅ Correct! +5 XP (Total: {get_credits(interaction.user.id)} XP)")
+        else:
+            await interaction.followup.send("❌ Incorrect. Try again tomorrow!")
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⌛ Time’s up! You had 60 seconds to answer.")
+
+# === Slash command: /quest ===
+@bot.tree.command(name="quest", description="Get your daily renovation quest")
+async def slash_quest(interaction: discord.Interaction):
+    now = datetime.datetime.utcnow()
+    last = last_quest_time.get(interaction.user.id)
+    if last and (now - last).total_seconds() < 86400:
+        await interaction.response.send_message("⏳ Only one daily quest allowed per 24h.", ephemeral=True)
+        return
+
     task = random.choice(quests)
     reward = random.randint(3, 7)
-    add_credits(ctx.author.id, reward)
-    last_quest_time[ctx.author.id] = now
-    await ctx.send(f"🛠️ Quest: **{task}**\n✅ You earned {reward} XP (Total: {get_credits(ctx.author.id)} XP)")
+    add_credits(interaction.user.id, reward)
+    last_quest_time[interaction.user.id] = now
+    await interaction.response.send_message(f"🛠️ Quest: **{task}**\n✅ You earned {reward} XP (Total: {get_credits(interaction.user.id)} XP)")
 
-# === Credit Score ===
-@bot.command()
-async def creditscore(ctx):
-    await ctx.send(f"💰 You have {get_credits(ctx.author.id)} XP.")
+# === Slash command: /creditscore ===
+@bot.tree.command(name="creditscore", description="Check your current XP")
+async def slash_credits(interaction: discord.Interaction):
+    await interaction.response.send_message(f"💰 You have {get_credits(interaction.user.id)} XP.")
 
-# === First Battle: 2-minute signup ===
-@bot.command()
-@commands.has_any_role("Administrator", "Chief Discord Officer")
-async def startfirstbattle(ctx):
-    if ctx.guild.id in last_battle_time:
-        return await ctx.send("⚠️ First battle already run.")
-    battle_participants.clear()
-    msg = await ctx.send(
-        "🚨 **FIRST MYİKKİ BATTLE** in #battle-renovation!\n"
-        "Click 🔨 to join within 2 minutes."
-    )
-    await msg.add_reaction("🔨")
-    def check(r, u): return r.message.id == msg.id and str(r.emoji) == "🔨" and not u.bot
-    try:
-        while True:
-            r, u = await bot.wait_for("reaction_add", timeout=120, check=check)
-            if u.id not in battle_participants:
-                battle_participants.append(u.id)
-                await ctx.send(f"🧱 {u.display_name} joined the first battle!")
-    except asyncio.TimeoutError:
-        pass
-    await run_battle(ctx)
-
-# === Regular Battle: 11-hour signup, max 2 per 12 h ===
-@bot.command()
-@commands.has_any_role("Administrator", "Chief Discord Officer")
-async def startbattle(ctx):
-    now = datetime.datetime.utcnow()
-    window = last_battle_time.get(ctx.guild.id, [])
-    window = [t for t in window if (now - t).total_seconds() < 43200]
-    if len(window) >= 2:
-        return await ctx.send("⏳ Only 2 battles allowed per 12 h.")
-    battle_participants.clear()
-    msg = await ctx.send(
-        "🚨 **MYİKKİ RUMBLE RENOVATION** in #battle-renovation!\n"
-        "Click 🔨 to join within 11 hours."
-    )
-    await msg.add_reaction("🔨")
-    def check(r, u): return r.message.id == msg.id and str(r.emoji) == "🔨" and not u.bot
-    end = now + datetime.timedelta(hours=11)
-    while datetime.datetime.utcnow() < end:
-        try:
-            r, u = await bot.wait_for("reaction_add", timeout=60, check=check)
-            if u.id not in battle_participants:
-                battle_participants.append(u.id)
-                await ctx.send(f"🧱 {u.display_name} joined the Rumble!")
-        except asyncio.TimeoutError:
-            continue
-    await run_battle(ctx)
-
-# === Core Battle Logic ===
-async def run_battle(ctx):
+# === Fonction interne pour lancer une battle ===
+async def run_battle(interaction: discord.Interaction):
     if len(battle_participants) < 2:
-        return await ctx.send("❌ Not enough participants. Cancelled.")
+        await interaction.channel.send("❌ Not enough participants. Cancelled.")
+        return
+
     now = datetime.datetime.utcnow()
-    last_battle_time.setdefault(ctx.guild.id, []).append(now)
+    last_battle_time.setdefault(interaction.guild.id, []).append(now)
 
     site = random.choice(building_types)
-    await ctx.send(f"🏗️ Battle at **{site}** with {len(battle_participants)} players!")
-    mentions = [(await ctx.guild.fetch_member(uid)).mention for uid in battle_participants]
-    await ctx.send("🎯 Participants: " + ", ".join(mentions))
+    await interaction.channel.send(f"🏗️ Battle at **{site}** with {len(battle_participants)} players!")
+    mentions = []
+    for uid in battle_participants:
+        member = await interaction.guild.fetch_member(uid)
+        mentions.append(member.mention)
+    await interaction.channel.send("🎯 Participants: " + ", ".join(mentions))
 
     survivors = battle_participants.copy()
     rnd = 0
@@ -232,69 +211,147 @@ async def run_battle(ctx):
         rnd += 1
         await asyncio.sleep(4)
 
-        # random event
+        # événement aléatoire
         if random.random() < 0.4:
-            await ctx.send(random.choice(event_messages))
+            await interaction.channel.send(random.choice(event_messages))
             await asyncio.sleep(3)
 
-        # bonus or malus
+        # bonus / malus
         roll = random.random()
         if roll < 0.3:
             target = random.choice(survivors)
             add_credits(target, 3)
-            member = await ctx.guild.fetch_member(target)
-            await ctx.send(random.choice(bonus_messages).format(name=member.display_name))
+            member = await interaction.guild.fetch_member(target)
+            await interaction.channel.send(random.choice(bonus_messages).format(name=member.display_name))
             await asyncio.sleep(2)
         elif roll < 0.5:
             target = random.choice(survivors)
-            remove_amount = min(credits.get(target, 0), 2)
-            credits[target] = credits.get(target, 0) - remove_amount
-            member = await ctx.guild.fetch_member(target)
-            await ctx.send(random.choice(malus_messages).format(name=member.display_name))
+            remove_amt = min(credits.get(target, 0), 2)
+            credits[target] = credits.get(target, 0) - remove_amt
+            member = await interaction.guild.fetch_member(target)
+            await interaction.channel.send(random.choice(malus_messages).format(name=member.display_name))
             await asyncio.sleep(2)
 
-        # elimination
+        # élimination
         elim = random.choice(survivors)
         survivors.remove(elim)
-        mem = await ctx.guild.fetch_member(elim)
-        await ctx.send(f"❌ Round {rnd}: {random.choice(elimination_messages).format(name=mem.display_name)}")
+        mem = await interaction.guild.fetch_member(elim)
+        await interaction.channel.send(f"❌ Round {rnd}: {random.choice(elimination_messages).format(name=mem.display_name)}")
         await asyncio.sleep(3)
 
-        # survivors update
-        left = [(await ctx.guild.fetch_member(uid)).display_name for uid in survivors]
-        await ctx.send("🧱 Remaining: " + ", ".join(left))
+        # mise à jour des survivants
+        left = []
+        for uid in survivors:
+            mbr = await interaction.guild.fetch_member(uid)
+            left.append(mbr.display_name)
+        await interaction.channel.send("🧱 Remaining: " + ", ".join(left))
 
-    # winner
+    # déclarer le gagnant
     winner_id = survivors[0]
-    winner = await ctx.guild.fetch_member(winner_id)
     add_credits(winner_id, 15)
+    winner = await interaction.guild.fetch_member(winner_id)
 
-    role = discord.utils.get(ctx.guild.roles, name="Lead Renovator")
+    # rôle temporaire “Lead Renovator”
+    role = discord.utils.get(interaction.guild.roles, name="Lead Renovator")
     if not role:
-        role = await ctx.guild.create_role(name="Lead Renovator")
+        role = await interaction.guild.create_role(name="Lead Renovator")
     await winner.add_roles(role)
-    await ctx.send(f"🏅 {winner.display_name} is now Lead Renovator (24 h role)!")
+    await interaction.channel.send(f"🏅 {winner.display_name} is now Lead Renovator (24 h role)!")
+    # on enlève le rôle après 24 h
     asyncio.create_task(remove_role_later(winner, role, 86400))
 
-    await ctx.send(f"""
-🏁 **Battle Complete**
-🏗️ Site: {site}
-🎖️ Winner: {winner.display_name}
-🎁 Reward: 15 XP
-🧱 Renovation done.
-""")
+    await interaction.channel.send(
+        f"🏁 **Battle Complete**\n"
+        f"🏗️ Site: {site}\n"
+        f"🎖️ Winner: {winner.display_name}\n"
+        f"🎁 Reward: 15 XP\n"
+        "🧱 Renovation done."
+    )
 
-# === Flask Keep-Alive for Render ===
-app = Flask('')
-@app.route('/')
+# === Slash command: /startfirstbattle ===
+@bot.tree.command(name="startfirstbattle", description="Admin: launch the first battle (2 min signup)")
+async def slash_startfirst(interaction: discord.Interaction):
+    # permission check
+    if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
+        await interaction.response.send_message("❌ You don’t have permission for that.", ephemeral=True)
+        return
+    # une seule fois
+    if interaction.guild.id in last_battle_time:
+        await interaction.response.send_message("⚠️ First battle already run.", ephemeral=True)
+        return
+
+    battle_participants.clear()
+    # on envoie le message de signup
+    await interaction.response.send_message(
+        "🚨 **FIRST MYİKKİ BATTLE** begins! Click 🔨 to join within 2 minutes."
+    )
+    msg = await interaction.original_response()
+    await msg.add_reaction("🔨")
+
+    def check(r, u):
+        return r.message.id == msg.id and str(r.emoji) == "🔨" and not u.bot
+
+    try:
+        while True:
+            r, u = await bot.wait_for("reaction_add", timeout=120, check=check)
+            if u.id not in battle_participants:
+                battle_participants.append(u.id)
+                await interaction.channel.send(f"🧱 {u.display_name} joined the first battle!")
+    except asyncio.TimeoutError:
+        pass
+
+    # on lance la battle
+    await run_battle(interaction)
+
+# === Slash command: /startbattle ===
+@bot.tree.command(name="startbattle", description="Admin: launch a Rumble Renovation (11 h signup)")
+async def slash_startbattle(interaction: discord.Interaction):
+    if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
+        await interaction.response.send_message("❌ You don’t have permission for that.", ephemeral=True)
+        return
+
+    now = datetime.datetime.utcnow()
+    window = last_battle_time.get(interaction.guild.id, [])
+    window = [t for t in window if (now - t).total_seconds() < 43200]
+    if len(window) >= 2:
+        await interaction.response.send_message("⏳ Only 2 battles allowed per 12 h.", ephemeral=True)
+        return
+
+    battle_participants.clear()
+    await interaction.response.send_message(
+        "🚨 **MYİKKİ RUMBLE RENOVATION** begins! Click 🔨 to join within 11 h."
+    )
+    msg = await interaction.original_response()
+    await msg.add_reaction("🔨")
+
+    end_time = now + datetime.timedelta(hours=11)
+    def check(r, u):
+        return r.message.id == msg.id and str(r.emoji) == "🔨" and not u.bot
+
+    while datetime.datetime.utcnow() < end_time:
+        try:
+            r, u = await bot.wait_for("reaction_add", timeout=60, check=check)
+            if u.id not in battle_participants:
+                battle_participants.append(u.id)
+                await interaction.channel.send(f"🧱 {u.display_name} joined the Rumble!")
+        except asyncio.TimeoutError:
+            continue
+
+    await run_battle(interaction)
+
+# === Flask keep-alive pour Render ===
+app = Flask("")
+@app.route("/")
 def home():
     return "I'm alive"
 
-def run():
+def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-Thread(target=run).start()
+Thread(target=run_flask).start()
 
-# === Run the Bot ===
-bot.run(os.environ["DISCORD_TOKEN"])
+# === Démarrage du bot ===
+if __name__ == "__main__":
+    TOKEN = os.environ["DISCORD_TOKEN"]
+    bot.run(TOKEN)
