@@ -15,10 +15,10 @@ from flask import Flask
 import discord
 from discord.ext import commands
 
-# === Charge les variables de .env pour le dev local ===
+# === Load .env locally ===
 load_dotenv()
 
-# === Keep-alive interne : ping sur "/" toutes les 60s ===
+# === Keep-alive interne (ping localhost toutes les 60s) ===
 def keep_awake():
     url = f"http://localhost:{os.environ.get('PORT', 8080)}/"
     while True:
@@ -28,11 +28,11 @@ def keep_awake():
             pass
         time.sleep(60)
 
-threading.Thread(target=keep_awake, daemon=True).start()
+Thread(target=keep_awake, daemon=True).start()
 
-# === Quiz: 40 questions Oui/Non (20 Yes, 20 No) ===
+# === Quiz questions (20 Yes, 20 No) ===
 quiz_questions = [
-    # 20 questions "Yes"
+    # 20 “Yes”
     {"question": "Can you create a digital twin of a building with MYİKKİ? (Yes/No)", "answer": "Yes"},
     {"question": "Is MYİKKİ’s digital twin visualized in 3D in real time? (Yes/No)", "answer": "Yes"},
     {"question": "Does MYİKKİ offer an interactive photorealistic rendering engine? (Yes/No)", "answer": "Yes"},
@@ -53,7 +53,8 @@ quiz_questions = [
     {"question": "Can you invite artisans and architects directly into your digital twin? (Yes/No)", "answer": "Yes"},
     {"question": "Does MYİKKİ’s ecosystem include both on-chain and off-chain features? (Yes/No)", "answer": "Yes"},
     {"question": "Can a non-developer easily use MYİKKİ to plan renovations? (Yes/No)", "answer": "Yes"},
-    # 20 questions "No"
+
+    # 20 “No”
     {"question": "Does MYİKKİ only work for new construction projects? (Yes/No)", "answer": "No"},
     {"question": "Is MYİKKİ limited to users in France only? (Yes/No)", "answer": "No"},
     {"question": "Can you use MYİKKİ without creating a digital twin? (Yes/No)", "answer": "No"},
@@ -129,50 +130,51 @@ elimination_messages = [
 ]
 
 bonus_messages = [
-    "{name} activated their safety harness — immune to the next elimination!",  
-    "{name} deployed a temporary shield wall — skips the next event unscathed!",  
-    "{name} discovered a hidden crawlspace — advances directly to the next round!",  
-    "{name} found a rapid-repair kit — +4 XP and fully patched for what’s next!",  
-    "{name} reinforced the floor with steel beams — avoids any collapse this round!",  
-    "{name} calibrated their drone camera — perfect vision for the next elimination (safe)!",  
-    "{name} stumbled upon extra scaffolding — +3 XP and climbs ahead of the pack!",  
-    "{name} donned magnetic boots — won’t slip on any spilled materials next round!",  
-    "{name} grabbed the contractor’s coffee — +2 XP and jitter-free performance!",  
-    "{name} used the emergency exit plan — leaps past one elimination attempt!"  
+    "{name} activated their safety harness — immune to the next elimination!",
+    "{name} deployed a temporary shield wall — skips the next event unscathed!",
+    "{name} discovered a hidden crawlspace — advances directly to the next round!",
+    "{name} found a rapid-repair kit — +4 XP and fully patched for what’s next!",
+    "{name} reinforced the floor with steel beams — avoids any collapse this round!",
+    "{name} calibrated their drone camera — perfect vision for the next elimination (safe)!",
+    "{name} stumbled upon extra scaffolding — +3 XP and climbs ahead of the pack!",
+    "{name} donned magnetic boots — won’t slip on any spilled materials next round!",
+    "{name} grabbed the contractor’s coffee — +2 XP and jitter-free performance!",
+    "{name} used the emergency exit plan — leaps past one elimination attempt!"
 ]
 
 malus_messages = [
-    "{name} dropped a heavy beam — loses 2 XP and misses the next round!",  
-    "{name} got sprayed with wet cement — slips and is unable to act this turn!",  
-    "{name} triggered a floor collapse — -3 XP and stuck for one round!",  
-    "{name} jammed their tool in the rubble — loses 1 XP and can’t compete this round!",  
-    "{name} mis-tightened the platform bolts — -2 XP and stumbles off the scaffold!",  
-    "{name} flew their drone into a wall — device crashes, -3 XP and grounded for a round!",  
-    "{name} knocked over the paint mixer — sprayed in the face, -2 XP and blinded next event!",  
-    "{name} forgot to secure the ladder — falls, -4 XP and sits out one round!",  
-    "{name} overloaded the power circuit — sparks fly, -3 XP and electrical hazard next turn!",  
-    "{name} slipped on grease — -1 XP and loses their next action!"  
+    "{name} dropped a heavy beam — loses 2 XP and misses the next round!",
+    "{name} got sprayed with wet cement — slips and is unable to act this turn!",
+    "{name} triggered a floor collapse — -3 XP and stuck for one round!",
+    "{name} jammed their tool in the rubble — loses 1 XP and can’t compete this round!",
+    "{name} mis-tightened the platform bolts — -2 XP and stumbles off the scaffold!",
+    "{name} flew their drone into a wall — device crashes, -3 XP and grounded for a round!",
+    "{name} knocked over the paint mixer — sprayed in the face, -2 XP and blinded next event!",
+    "{name} forgot to secure the ladder — falls, -4 XP and sits out one round!",
+    "{name} overloaded the power circuit — sparks fly, -3 XP and electrical hazard next turn!",
+    "{name} slipped on grease — -1 XP and loses their next action!"
 ]
 
-# === Globals for XP and timing ===
+# === Globals & Helpers ===
 credits = {}
 last_quiz_time = {}
 last_quest_time = {}
 last_battle_time = {}
 battle_participants = []
 
-# === Helpers ===
-def add_credits(user_id: int, amount: int):
-    credits[user_id] = credits.get(user_id, 0) + amount
+def add_credits(uid, amt):
+    credits[uid] = credits.get(uid, 0) + amt
 
-def get_credits(user_id: int) -> int:
-    return credits.get(user_id, 0)
+def get_credits(uid):
+    return credits.get(uid, 0)
 
-async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
+async def remove_role_later(member, role, delay):
     await asyncio.sleep(delay)
     await member.remove_roles(role)
 
-# === Bot setup ===
+# === Bot setup with guild-only command sync ===
+GUILD_ID = int(os.environ.get("GUILD_ID", 0))
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -181,8 +183,11 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
-        await self.tree.sync()
-        print("🔄 Slash commands synced")
+        if GUILD_ID:
+            await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print(f"🔄 Slash commands synced for guild {GUILD_ID}")
+        else:
+            print("⚠️ GUILD_ID not set, skipping guild sync")
 
 bot = MyBot()
 
@@ -196,7 +201,11 @@ async def slash_quiz(interaction: discord.Interaction):
     q = random.choice(quiz_questions)
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
     def check(m: discord.Message):
-        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id and m.content.lower().strip() in ("yes", "no")
+        return (
+            m.author.id == interaction.user.id and
+            m.channel.id == interaction.channel.id and
+            m.content.lower().strip() in ("yes", "no")
+        )
     try:
         m = await bot.wait_for("message", timeout=30, check=check)
         if m.content.lower().strip() == q["answer"].lower():
@@ -219,14 +228,16 @@ async def slash_quest(interaction: discord.Interaction):
     reward = random.randint(3, 7)
     add_credits(interaction.user.id, reward)
     last_quest_time[interaction.user.id] = now
-    await interaction.response.send_message(f"🛠️ Quest: **{task}**\n✅ Earned {reward} XP (Total: {get_credits(interaction.user.id)} XP)")
+    await interaction.response.send_message(
+        f"🛠️ Quest: **{task}**\n✅ Earned {reward} XP (Total: {get_credits(interaction.user.id)} XP)"
+    )
 
 # === /creditscore ===
 @bot.tree.command(name="creditscore", description="Check your current XP")
 async def slash_credits(interaction: discord.Interaction):
-    await interaction.response.send_message(f"💰 {get_credits(interaction.user.id)} XP")
+    await interaction.response.send_message(f"💰 You have {get_credits(interaction.user.id)} XP.")
 
-# === Battle runner ===
+# === run_battle helper ===
 async def run_battle(ctx):
     if len(battle_participants) < 2:
         return await ctx.channel.send("❌ Not enough participants.")
@@ -299,7 +310,6 @@ async def slash_startbattle(interaction: discord.Interaction):
     if len(window) >= 2:
         return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
 
-    # Ack immédiat
     await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join (11h)")
     msg = await interaction.original_response()
 
@@ -325,7 +335,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-Thread(target=run_flask).start()
+Thread(target=run_flask, daemon=True).start()
 
 # === Run Bot ===
 if __name__ == "__main__":
