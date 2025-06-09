@@ -307,25 +307,48 @@ async def slash_startfirst(interaction: discord.Interaction):
         await run_battle(D())
     asyncio.create_task(finish_first())
 
-# === /startbattle ===
+# === /startbattle (version non bloquante) ===
 @bot.tree.command(name="startbattle", description="Admin: launch an 11h signup rumble")
 async def slash_startbattle(interaction: discord.Interaction):
+    # 1) permission check rapide
     if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return
+
+    # 2) contrôle du quota
     now = datetime.datetime.utcnow()
     window = [t for t in last_battle_time.get(interaction.guild.id, []) if (now - t).total_seconds() < 43200]
     if len(window) >= 2:
-        return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
-    battle_participants.clear()
-    await interaction.response.send_message("🚨 RUMBLE: click 🔨 to join (11h)")
+        await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
+        return
+
+    # 3) réponse immédiate à Discord (ack)
+    await interaction.response.send_message("🚨 RUMBLE: React with 🔨 to join (11h)")
+
+    # 4) on récupère le message pour ajouter la réaction
     msg = await interaction.original_response()
-    await msg.add_reaction("🔨")
-    # planifie la fin d'inscription et le lancement de la battle
-    async def finish_rumble():
+
+    # 5) cette fonction fait tout en arrière-plan
+    async def background_rumble():
+        # ajoute la réaction (non bloquant pour l'ack)
+        try:
+            await msg.add_reaction("🔨")
+        except:
+            pass
+        # on efface d'anciennes inscriptions et on attend 11h
+        battle_participants.clear()
         await asyncio.sleep(11 * 3600)
-        class D: guild=interaction.guild; channel=interaction.channel
-        await run_battle(D())
-    asyncio.create_task(finish_rumble())
+
+        # puis on lance la battle
+        class DummyCtx:
+            def __init__(self, guild, channel):
+                self.guild = guild
+                self.channel = channel
+        await run_battle(DummyCtx(interaction.guild, interaction.channel))
+
+    # 6) on déclenche la tâche de fond
+    asyncio.create_task(background_rumble())
+
 
 # === Flask keep-alive endpoint ===
 app = Flask("")
