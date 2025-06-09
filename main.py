@@ -241,15 +241,14 @@ async def slash_credits(interaction: discord.Interaction):
     await interaction.response.send_message(f"💰 You have {get_credits(interaction.user.id)} XP.")
 
 # === run_battle helper ===
-async def run_battle(interaction: discord.Interaction):
+async def run_battle(interaction):
     if len(battle_participants) < 2:
-        await interaction.channel.send("❌ Not enough participants.")
-        return
+        return await interaction.channel.send("❌ Not enough participants.")
     now = datetime.datetime.utcnow()
     last_battle_time.setdefault(interaction.guild.id, []).append(now)
     site = random.choice(building_types)
     mentions = [ (await interaction.guild.fetch_member(uid)).mention for uid in battle_participants ]
-    await interaction.channel.send(f"🏗️ Battle at **{site}** with {len(mentions)} players!\n🎯 Participants: {', '.join(mentions)}")
+    await interaction.channel.send(f"🏗️ Battle at **{site}**!\n🎯 Participants: {', '.join(mentions)}")
     survivors = battle_participants.copy()
     rnd = 0
     while len(survivors) > 1:
@@ -294,52 +293,39 @@ async def run_battle(interaction: discord.Interaction):
 @bot.tree.command(name="startfirstbattle", description="Admin: launch the first 2-min signup battle")
 async def slash_startfirst(interaction: discord.Interaction):
     if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True)
-        return
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if interaction.guild.id in last_battle_time:
-        await interaction.response.send_message("⚠️ Already run.", ephemeral=True)
-        return
+        return await interaction.response.send_message("⚠️ Already run.", ephemeral=True)
     battle_participants.clear()
     await interaction.response.send_message("🚨 FIRST BATTLE: click 🔨 to join (2 min)")
     msg = await interaction.original_response()
     await msg.add_reaction("🔨")
-    def check(r,u): return r.message.id==msg.id and str(r.emoji)=="🔨" and not u.bot
-    try:
-        while True:
-            r,u = await bot.wait_for("reaction_add", timeout=120, check=check)
-            if u.id not in battle_participants:
-                battle_participants.append(u.id)
-                await interaction.channel.send(f"🧱 {u.display_name} joined!")
-    except asyncio.TimeoutError:
-        pass
-    await run_battle(interaction)
+    # collecte pendant 2 minutes en tâche de fond
+    async def finish_first():
+        await asyncio.sleep(120)
+        class D: guild=interaction.guild; channel=interaction.channel
+        await run_battle(D())
+    asyncio.create_task(finish_first())
 
 # === /startbattle ===
 @bot.tree.command(name="startbattle", description="Admin: launch an 11h signup rumble")
 async def slash_startbattle(interaction: discord.Interaction):
     if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
-        await interaction.response.send_message("❌ No permission.", ephemeral=True)
-        return
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     now = datetime.datetime.utcnow()
     window = [t for t in last_battle_time.get(interaction.guild.id, []) if (now - t).total_seconds() < 43200]
     if len(window) >= 2:
-        await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
-        return
+        return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
     battle_participants.clear()
     await interaction.response.send_message("🚨 RUMBLE: click 🔨 to join (11h)")
     msg = await interaction.original_response()
     await msg.add_reaction("🔨")
-    end = now + datetime.timedelta(hours=11)
-    def check(r,u): return r.message.id==msg.id and str(r.emoji)=="🔨" and not u.bot
-    while datetime.datetime.utcnow() < end:
-        try:
-            r,u = await bot.wait_for("reaction_add", timeout=60, check=check)
-            if u.id not in battle_participants:
-                battle_participants.append(u.id)
-                await interaction.channel.send(f"🧱 {u.display_name} joined!")
-        except asyncio.TimeoutError:
-            continue
-    await run_battle(interaction)
+    # planifie la fin d'inscription et le lancement de la battle
+    async def finish_rumble():
+        await asyncio.sleep(11 * 3600)
+        class D: guild=interaction.guild; channel=interaction.channel
+        await run_battle(D())
+    asyncio.create_task(finish_rumble())
 
 # === Flask keep-alive endpoint ===
 app = Flask("")
