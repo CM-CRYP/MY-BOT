@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import random
 import datetime
@@ -13,12 +11,13 @@ from dotenv import load_dotenv
 from flask import Flask
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
-# === Load .env locally ===
+# === Charge .env ===
 load_dotenv()
 
-# === Keep-alive interne (ping localhost toutes les 60s) ===
+# === Keep-alive interne (ping localhost) ===
 def keep_awake():
     url = f"http://localhost:{os.environ.get('PORT', 8080)}/"
     while True:
@@ -30,9 +29,8 @@ def keep_awake():
 
 Thread(target=keep_awake, daemon=True).start()
 
-# === Quiz questions (20 Yes, 20 No) ===
+# === Questions Quiz Oui/Non (20 Yes, 20 No) ===
 quiz_questions = [
-    # 20 “Yes”
     {"question": "Can you create a digital twin of a building with MYİKKİ? (Yes/No)", "answer": "Yes"},
     {"question": "Is MYİKKİ’s digital twin visualized in 3D in real time? (Yes/No)", "answer": "Yes"},
     {"question": "Does MYİKKİ offer an interactive photorealistic rendering engine? (Yes/No)", "answer": "Yes"},
@@ -53,8 +51,6 @@ quiz_questions = [
     {"question": "Can you invite artisans and architects directly into your digital twin? (Yes/No)", "answer": "Yes"},
     {"question": "Does MYİKKİ’s ecosystem include both on-chain and off-chain features? (Yes/No)", "answer": "Yes"},
     {"question": "Can a non-developer easily use MYİKKİ to plan renovations? (Yes/No)", "answer": "Yes"},
-
-    # 20 “No”
     {"question": "Does MYİKKİ only work for new construction projects? (Yes/No)", "answer": "No"},
     {"question": "Is MYİKKİ limited to users in France only? (Yes/No)", "answer": "No"},
     {"question": "Can you use MYİKKİ without creating a digital twin? (Yes/No)", "answer": "No"},
@@ -79,7 +75,6 @@ quiz_questions = [
 
 # === Quests & Battle Data ===
 quests = ["Inspect a window", "Certify a roof", "Upgrade the insulation", "Scan for mold"]
-
 building_types = [
     "an old Parisian apartment building",
     "an abandoned rural school",
@@ -102,7 +97,6 @@ building_types = [
     "a jungle treehouse research station",
     "a heritage Gothic cathedral"
 ]
-
 event_messages = [
     "⚠️ A sudden downpour drenches the site—tools start slipping everywhere!",
     "🧯 Fire alarms blare: a welding spark ignited debris—teams must evacuate momentarily.",
@@ -115,7 +109,6 @@ event_messages = [
     "🌪️ A mini-tornado of dust and debris sweeps the site—visibility drops.",
     "🏗️ Crane malfunction: the load swings wildly—stay clear or get eliminated!"
 ]
-
 elimination_messages = [
     "{name} was caught under falling debris—eliminated!",
     "{name} stepped into wet cement—sank and is out!",
@@ -128,7 +121,6 @@ elimination_messages = [
     "{name} got tangled in electrical cables—out!",
     "{name} used the wrong tool and collapsed the scaffolding—eliminated!"
 ]
-
 bonus_messages = [
     "{name} activated their safety harness — immune to the next elimination!",
     "{name} deployed a temporary shield wall — skips the next event unscathed!",
@@ -141,7 +133,6 @@ bonus_messages = [
     "{name} grabbed the contractor’s coffee — +2 XP and jitter-free performance!",
     "{name} used the emergency exit plan — leaps past one elimination attempt!"
 ]
-
 malus_messages = [
     "{name} dropped a heavy beam — loses 2 XP and misses the next round!",
     "{name} got sprayed with wet cement — slips and is unable to act this turn!",
@@ -162,18 +153,18 @@ last_quest_time = {}
 last_battle_time = {}
 battle_participants = []
 
-def add_credits(uid, amt):
-    credits[uid] = credits.get(uid, 0) + amt
+def add_credits(user_id, amount):
+    credits[user_id] = credits.get(user_id, 0) + amount
 
-def get_credits(uid):
-    return credits.get(uid, 0)
+def get_credits(user_id):
+    return credits.get(user_id, 0)
 
-async def remove_role_later(member, role, delay):
+async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
     await asyncio.sleep(delay)
     await member.remove_roles(role)
 
-# === Bot setup with guild-only command sync ===
-GUILD_ID = int(os.environ.get("GUILD_ID", 0))
+# === Bot Setup ===
+GUILD_ID = int(os.getenv("GUILD_ID", 0))
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -187,25 +178,21 @@ class MyBot(commands.Bot):
             await self.tree.sync(guild=discord.Object(id=GUILD_ID))
             print(f"🔄 Slash commands synced for guild {GUILD_ID}")
         else:
-            print("⚠️ GUILD_ID not set, skipping guild sync")
-
+            await self.tree.sync()
+            print("🔄 Slash commands synced globally")
+        
 bot = MyBot()
 
-# === /quiz ===
+# --- /quiz ---
 @bot.tree.command(name="quiz", description="Take your daily yes/no MYİKKİ quiz")
 async def slash_quiz(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quiz_time.get(interaction.user.id)
     if last and (now - last).total_seconds() < 86400:
-        return await interaction.response.send_message("⏳ Only one quiz per 24h.", ephemeral=True)
+        return await interaction.response.send_message("⏳ Only once per 24h.", ephemeral=True)
     q = random.choice(quiz_questions)
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
-    def check(m: discord.Message):
-        return (
-            m.author.id == interaction.user.id and
-            m.channel.id == interaction.channel.id and
-            m.content.lower().strip() in ("yes", "no")
-        )
+    def check(m): return m.author.id==interaction.user.id and m.channel.id==interaction.channel.id and m.content.lower().strip() in ("yes","no")
     try:
         m = await bot.wait_for("message", timeout=30, check=check)
         if m.content.lower().strip() == q["answer"].lower():
@@ -217,7 +204,7 @@ async def slash_quiz(interaction: discord.Interaction):
     except asyncio.TimeoutError:
         await interaction.followup.send("⌛ Time’s up! (30s)")
 
-# === /quest ===
+# --- /quest ---
 @bot.tree.command(name="quest", description="Get your daily renovation quest")
 async def slash_quest(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
@@ -225,19 +212,17 @@ async def slash_quest(interaction: discord.Interaction):
     if last and (now - last).total_seconds() < 86400:
         return await interaction.response.send_message("⏳ Only one quest per 24h.", ephemeral=True)
     task = random.choice(quests)
-    reward = random.randint(3, 7)
+    reward = random.randint(3,7)
     add_credits(interaction.user.id, reward)
     last_quest_time[interaction.user.id] = now
-    await interaction.response.send_message(
-        f"🛠️ Quest: **{task}**\n✅ Earned {reward} XP (Total: {get_credits(interaction.user.id)} XP)"
-    )
+    await interaction.response.send_message(f"🛠️ Quest: **{task}**\n✅ +{reward} XP (Total: {get_credits(interaction.user.id)} XP)")
 
-# === /creditscore ===
+# --- /creditscore ---
 @bot.tree.command(name="creditscore", description="Check your current XP")
-async def slash_credits(interaction: discord.Interaction):
+async def slash_creditscore(interaction: discord.Interaction):
     await interaction.response.send_message(f"💰 You have {get_credits(interaction.user.id)} XP.")
 
-# === run_battle helper ===
+# --- Battle runner ---
 async def run_battle(ctx):
     if len(battle_participants) < 2:
         return await ctx.channel.send("❌ Not enough participants.")
@@ -256,42 +241,45 @@ async def run_battle(ctx):
             await asyncio.sleep(2)
         roll = random.random()
         if roll < 0.3:
-            t = random.choice(survivors)
-            add_credits(t, 3)
-            m = await ctx.guild.fetch_member(t)
-            await ctx.channel.send(random.choice(bonus_messages).format(name=m.display_name))
+            target = random.choice(survivors)
+            add_credits(target,3)
+            member = await ctx.guild.fetch_member(target)
+            await ctx.channel.send(random.choice(bonus_messages).format(name=member.display_name))
             await asyncio.sleep(2)
         elif roll < 0.5:
-            t = random.choice(survivors)
-            dec = min(credits.get(t, 0), 2)
-            credits[t] -= dec
-            m = await ctx.guild.fetch_member(t)
-            await ctx.channel.send(random.choice(malus_messages).format(name=m.display_name))
+            target = random.choice(survivors)
+            rem = min(credits.get(target,0),2)
+            credits[target] -= rem
+            member = await ctx.guild.fetch_member(target)
+            await ctx.channel.send(random.choice(malus_messages).format(name=member.display_name))
             await asyncio.sleep(2)
         elim = random.choice(survivors)
         survivors.remove(elim)
-        m = await ctx.guild.fetch_member(elim)
-        await ctx.channel.send(f"❌ Round {rnd}: {random.choice(elimination_messages).format(name=m.display_name)}")
+        mem = await ctx.guild.fetch_member(elim)
+        await ctx.channel.send(f"❌ Round {rnd}: {random.choice(elimination_messages).format(name=mem.display_name)}")
         await asyncio.sleep(2)
         left = [(await ctx.guild.fetch_member(uid)).display_name for uid in survivors]
         await ctx.channel.send("🧱 Remaining: " + ", ".join(left))
     winner_id = survivors[0]
-    add_credits(winner_id, 15)
+    add_credits(winner_id,15)
     winner = await ctx.guild.fetch_member(winner_id)
-    role = discord.utils.get(ctx.guild.roles, name="Lead Renovator") or await ctx.guild.create_role(name="Lead Renovator")
+    role = discord.utils.get(ctx.guild.roles,name="Lead Renovator")
+    if not role:
+        role = await ctx.guild.create_role(name="Lead Renovator")
     await winner.add_roles(role)
-    await ctx.channel.send(f"🏅 {winner.display_name} is now Lead Renovator (24h) (+15 XP)!")
-    asyncio.create_task(remove_role_later(winner, role, 86400))
+    await ctx.channel.send(f"🏅 {winner.display_name} is now Lead Renovator (24h)!")
+    asyncio.create_task(remove_role_later(winner,role,86400))
+    await ctx.channel.send(f"🏁 Battle complete! Winner: {winner.display_name} (+15 XP)")
 
-# === /startfirstbattle ===
-@bot.tree.command(name="startfirstbattle", description="Admin: launch the first 2-min signup battle")
+# --- /startfirstbattle ---
+@bot.tree.command(name="startfirstbattle", description="Admin: open first 2-min signup battle")
 async def slash_startfirst(interaction: discord.Interaction):
     if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if interaction.guild.id in last_battle_time:
         return await interaction.response.send_message("⚠️ Already run.", ephemeral=True)
     battle_participants.clear()
-    await interaction.response.send_message("🚨 FIRST BATTLE: React 🔨 to join (2 min)")
+    await interaction.response.send_message("🚨 FIRST BATTLE: React 🔨 to join (2m)")
     msg = await interaction.original_response()
     await msg.add_reaction("🔨")
     async def finish_first():
@@ -300,29 +288,24 @@ async def slash_startfirst(interaction: discord.Interaction):
         await run_battle(C())
     asyncio.create_task(finish_first())
 
-# === /startbattle (non bloquant) ===
-@bot.tree.command(name="startbattle", description="Admin: launch an 11h signup rumble")
+# --- /startbattle ---
+@bot.tree.command(name="startbattle", description="Admin: open 11h signup rumble")
 async def slash_startbattle(interaction: discord.Interaction):
     if not any(r.name in ("Administrator","Chief Discord Officer") for r in interaction.user.roles):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     now = datetime.datetime.utcnow()
-    window = [t for t in last_battle_time.get(interaction.guild.id, []) if (now - t).total_seconds() < 43200]
-    if len(window) >= 2:
+    window = [t for t in last_battle_time.get(interaction.guild.id,[]) if (now-t).total_seconds()<43200]
+    if len(window)>=2:
         return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
-
     await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join (11h)")
     msg = await interaction.original_response()
-
     async def background_rumble():
-        try:
-            await msg.add_reaction("🔨")
-        except:
-            pass
+        try: await msg.add_reaction("🔨")
+        except: pass
         battle_participants.clear()
-        await asyncio.sleep(11 * 3600)
+        await asyncio.sleep(11*3600)
         class C: guild=interaction.guild; channel=interaction.channel
         await run_battle(C())
-
     asyncio.create_task(background_rumble())
 
 # === Flask keep-alive endpoint ===
@@ -332,11 +315,15 @@ def home():
     return "I'm alive"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.getenv("PORT",8080))
+    app.run(host="0.0.0.0",port=port)
 
-Thread(target=run_flask, daemon=True).start()
+Thread(target=run_flask,daemon=True).start()
 
-# === Run Bot ===
+# === Run the bot ===
 if __name__ == "__main__":
-    bot.run(os.environ["DISCORD_TOKEN"])
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN not set in environment")
+    bot.run(token)
+
