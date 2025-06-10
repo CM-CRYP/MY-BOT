@@ -5,31 +5,21 @@ import asyncio
 import threading
 import time
 import requests
-from threading import Thread
+import json
 
 from dotenv import load_dotenv
 from flask import Flask
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 # === Charge .env ===
 load_dotenv()
 
-# === Keep-alive interne (ping localhost) ===
-def keep_awake():
-    url = f"http://localhost:{os.environ.get('PORT', 8080)}/"
-    while True:
-        try:
-            requests.get(url, timeout=5)
-        except:
-            pass
-        time.sleep(60)
+# === Constantes de persistance ===
+PARTICIPANTS_FILE = "signup.json"
 
-Thread(target=keep_awake, daemon=True).start()
-
-# === Questions Quiz Oui/Non (20 Yes, 20 No) ===
+# === Questions Quiz Oui/Non ===
 quiz_questions = [
     {"question": "Can you create a digital twin of a building with MYİKKİ? (Yes/No)", "answer": "Yes"},
     {"question": "Is MYİKKİ’s digital twin visualized in 3D in real time? (Yes/No)", "answer": "Yes"},
@@ -74,7 +64,12 @@ quiz_questions = [
 ]
 
 # === Quests & Battle Data ===
-quests = ["Inspect a window", "Certify a roof", "Upgrade the insulation", "Scan for mold"]
+quests = [
+    "Inspect a window",
+    "Certify a roof",
+    "Upgrade the insulation",
+    "Scan for mold"
+]
 building_types = [
     "an old Parisian apartment building",
     "an abandoned rural school",
@@ -115,7 +110,7 @@ elimination_messages = [
     "{name} got struck by a swinging beam—knocked out!",
     "{name} lost balance on a plank—took a tumble!",
     "{name} misread the blueprint—built the wrong wall and got disqualified!",
-    "{name}’s drone malfunctioned and toppled a rafter—down for the count!",
+    "{name}�s drone malfunctioned and toppled a rafter—down for the count!",
     "{name} tumbled through an unsecured hatch—gone!",
     "{name} cut the wrong wire—tripped the alarm and was removed!",
     "{name} got tangled in electrical cables—out!",
@@ -146,18 +141,47 @@ malus_messages = [
     "{name} slipped on grease — -1 XP and loses their next action!"
 ]
 
-# === Globals & Helpers ===
+# === Variables globales et persistance ===
 credits = {}
 last_quiz_time = {}
 last_quest_time = {}
 last_battle_time = {}
 battle_participants = []
+signup_message_id = None
 
-def add_credits(user_id, amount):
-    credits[user_id] = credits.get(user_id, 0) + amount
+# Persistance: charge l’état des inscriptions
+def load_signup():
+    global signup_message_id, battle_participants
+    if os.path.isfile(PARTICIPANTS_FILE):
+        with open(PARTICIPANTS_FILE, "r") as f:
+            data = json.load(f)
+            signup_message_id = data.get("message_id")
+            battle_participants = data.get("participants", [])
+    else:
+        signup_message_id = None
+        battle_participants = []
 
-def get_credits(user_id):
-    return credits.get(user_id, 0)
+# Persistance: sauve l’état des inscriptions
+def save_signup():
+    with open(PARTICIPANTS_FILE, "w") as f:
+        json.dump({"message_id": signup_message_id, "participants": battle_participants}, f)
+
+load_signup()  # Charge au démarrage
+
+# === Keep-alive interne (ping localhost) ===
+def keep_awake():
+    url = f"http://localhost:{os.environ.get('PORT', 8080)}/"
+    while True:
+        try: requests.get(url, timeout=5)
+        except: pass
+        time.sleep(60)
+
+threading.Thread(target=keep_awake, daemon=True).start()
+
+# === Helpers crédits ===
+def add_credits(user_id, amount): credits[user_id] = credits.get(user_id, 0) + amount
+
+def get_credits(user_id): return credits.get(user_id, 0)
 
 async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
     await asyncio.sleep(delay)
@@ -171,6 +195,7 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+        intents.reactions = True
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
@@ -180,8 +205,26 @@ class MyBot(commands.Bot):
         else:
             await self.tree.sync()
             print("🔄 Slash commands synced globally")
-        
+
 bot = MyBot()
+
+# === Gestion des réactions pour l’inscription ===
+@bot.event
+async def on_raw_reaction_add(payload):
+    global signup_message_id
+    if payload.user_id == bot.user.id: return
+    if str(payload.emoji) == "🔨" and payload.message_id == signup_message_id:
+        if payload.user_id not in battle_participants:
+            battle_participants.append(payload.user_id)
+            save_signup()
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    global signup_message_id
+    if str(payload.emoji) == "🔨" and payload.message_id == signup_message_id:
+        if payload.user_id in battle_participants:
+            battle_participants.remove(payload.user_id)
+            save_signup()
 
 # --- /quiz ---
 @bot.tree.command(name="quiz", description="Take your daily yes/no MYİKKİ quiz")
@@ -192,7 +235,7 @@ async def slash_quiz(interaction: discord.Interaction):
         return await interaction.response.send_message("⏳ Only once per 24h.", ephemeral=True)
     q = random.choice(quiz_questions)
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
-    def check(m): return m.author.id==interaction.user.id and m.channel.id==interaction.channel.id and m.content.lower().strip() in ("yes","no")
+    def check(m): return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id and m.content.lower().strip() in ("yes","no")
     try:
         m = await bot.wait_for("message", timeout=30, check=check)
         if m.content.lower().strip() == q["answer"].lower():
@@ -279,9 +322,13 @@ async def slash_startfirst(interaction: discord.Interaction):
     if interaction.guild.id in last_battle_time:
         return await interaction.response.send_message("⚠️ Already run.", ephemeral=True)
     battle_participants.clear()
-    await interaction.response.send_message("🚨 FIRST BATTLE: React 🔨 to join (2m)")
+    msg = await interaction.response.send_message("🚨 FIRST BATTLE: React 🔨 to join (2m)")
     msg = await interaction.original_response()
+    global signup_message_id
+    signup_message_id = msg.id
+    save_signup()
     await msg.add_reaction("🔨")
+
     async def finish_first():
         await asyncio.sleep(120)
         class C: guild=interaction.guild; channel=interaction.channel
@@ -297,28 +344,32 @@ async def slash_startbattle(interaction: discord.Interaction):
     window = [t for t in last_battle_time.get(interaction.guild.id,[]) if (now-t).total_seconds()<43200]
     if len(window)>=2:
         return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
-    await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join (11h)")
+    battle_participants.clear()
+    msg = await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join (11h)")
     msg = await interaction.original_response()
+    global signup_message_id
+    signup_message_id = msg.id
+    save_signup()
+    try:
+        await msg.add_reaction("🔨")
+    except: pass
+
     async def background_rumble():
-        try: await msg.add_reaction("🔨")
-        except: pass
-        battle_participants.clear()
         await asyncio.sleep(11*3600)
         class C: guild=interaction.guild; channel=interaction.channel
         await run_battle(C())
     asyncio.create_task(background_rumble())
 
-# === Flask keep-alive endpoint ===
+# === Keep-alive endpoint pour monitor ===
 app = Flask("")
 @app.route("/")
-def home():
-    return "I'm alive"
+def home(): return "I'm alive"
 
 def run_flask():
-    port = int(os.getenv("PORT",8080))
-    app.run(host="0.0.0.0",port=port)
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-Thread(target=run_flask,daemon=True).start()
+threading.Thread(target=run_flask, daemon=True).start()
 
 # === Run the bot ===
 if __name__ == "__main__":
@@ -326,4 +377,3 @@ if __name__ == "__main__":
     if not token:
         raise RuntimeError("DISCORD_TOKEN not set in environment")
     bot.run(token)
-
