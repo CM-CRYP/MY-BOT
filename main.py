@@ -262,7 +262,7 @@ async def slash_quiz(interaction: discord.Interaction):
 
 # --- /quest ---
 @bot.tree.command(name="quest", description="Get your daily renovation quest")
-async def slash_quest(interaction: discord.Interaction)):
+async def slash_quest(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quest_time.get(interaction.user.id)
     if last and (now - last).total_seconds() < 86400:
