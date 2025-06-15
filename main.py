@@ -16,7 +16,7 @@ from discord.ext import commands
 # === Load environment variables ===
 load_dotenv()
 
-# === Persistence file (optional) ===
+# === Persistence file ===
 PARTICIPANTS_FILE = "signup.json"
 
 # === Quiz data ===
@@ -158,10 +158,7 @@ def load_signup():
 
 def save_signup():
     with open(PARTICIPANTS_FILE, "w") as f:
-        json.dump({
-            "message_id": signup_message_id,
-            "participants": battle_participants
-        }, f)
+        json.dump({"message_id": signup_message_id, "participants": battle_participants}, f)
 
 load_signup()
 
@@ -274,46 +271,57 @@ async def slash_quest(interaction: discord.Interaction):
 async def slash_creditscore(interaction: discord.Interaction):
     await interaction.response.send_message(f"💰 You have {get_credits(interaction.user.id)} XP.")
 
-# --- Battle runner ---
+# --- Battle runner with 3s intervals ---
 async def run_battle(ctx):
     global battle_in_progress
     try:
-        survivors = list(dict.fromkeys(battle_participants))  # dedupe
+        survivors = list(dict.fromkeys(battle_participants))
         if len(survivors) < 2:
             return await ctx.send("❌ Not enough participants.")
         now = datetime.datetime.utcnow()
         last_battle_time.setdefault(ctx.guild.id, []).append(now)
         site = random.choice(building_types)
-        mentions = [(await ctx.guild.fetch_member(uid)).mention for uid in survivors]
-        await ctx.send(f"🏗️ Battle at **{site}** with {len(survivors)} players!\n🎯 Participants: {', '.join(mentions)}")
+
+        await ctx.send(f"🏗️ Battle at **{site}** with {len(survivors)} players!")
+        await asyncio.sleep(3)
+
+        mentions = ", ".join((await ctx.guild.fetch_member(uid)).mention for uid in survivors)
+        await ctx.send(f"🎯 Participants: {mentions}")
+        await asyncio.sleep(3)
+
         rnd = 0
         while len(survivors) > 1:
             rnd += 1
-            await asyncio.sleep(4)
+
             if random.random() < 0.4:
                 await ctx.send(random.choice(event_messages))
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
+
             roll = random.random()
             if roll < 0.3:
                 target = random.choice(survivors)
                 add_credits(target, 3)
                 member = await ctx.guild.fetch_member(target)
                 await ctx.send(random.choice(bonus_messages).format(name=member.display_name))
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
             elif roll < 0.5:
                 target = random.choice(survivors)
                 rem = min(credits.get(target, 0), 2)
                 credits[target] -= rem
                 member = await ctx.guild.fetch_member(target)
                 await ctx.send(random.choice(malus_messages).format(name=member.display_name))
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
+
             elim = random.choice(survivors)
             survivors.remove(elim)
             member = await ctx.guild.fetch_member(elim)
             await ctx.send(f"❌ Round {rnd}: {random.choice(elimination_messages).format(name=member.display_name)}")
-            await asyncio.sleep(2)
-            left = [(await ctx.guild.fetch_member(uid)).display_name for uid in survivors]
-            await ctx.send("🧱 Remaining: " + ", ".join(left))
+            await asyncio.sleep(3)
+
+            left = ", ".join((await ctx.guild.fetch_member(uid)).display_name for uid in survivors)
+            await ctx.send("🧱 Remaining: " + left)
+            await asyncio.sleep(3)
+
         # Winner
         winner_id = survivors[0]
         add_credits(winner_id, 15)
@@ -321,11 +329,10 @@ async def run_battle(ctx):
         role = discord.utils.get(ctx.guild.roles, name="Lead Renovator") or await ctx.guild.create_role(name="Lead Renovator")
         await winner.add_roles(role)
         await ctx.send(f"🏅 {winner.display_name} is now Lead Renovator (24h)! (+15 XP)")
-        asyncio.create_task(remove_role_later(winner, role, 86400))
+        await asyncio.sleep(3)
         await ctx.send(f"🏁 Battle Complete!\n🏗️ Site: {site}\n🎖️ Winner: {winner.display_name}\n🎁 Reward: 15 XP\n🧱 Renovation done.")
     finally:
         battle_in_progress = False
-        # reset signup state
         global signup_message_id
         signup_message_id = None
 
@@ -349,7 +356,6 @@ async def slash_startfirst(interaction: discord.Interaction):
 
     async def finish():
         await asyncio.sleep(300)  # 5 minutes
-        # create minimal context
         class Ctx:
             guild = interaction.guild
             send = interaction.channel.send
@@ -365,10 +371,16 @@ async def slash_startbattle(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if battle_in_progress:
         return await interaction.response.send_message("❌ A battle is already in progress.", ephemeral=True)
+
     now = datetime.datetime.utcnow()
-    window = [t for t in last_battle_time.get(interaction.guild.id, []) if (now - t).total_seconds() < 43200]
+    # window of 11 hours between runs
+    window = [
+        t for t in last_battle_time.get(interaction.guild.id, [])
+        if (now - t).total_seconds() < 11 * 3600
+    ]
     if len(window) >= 2:
-        return await interaction.response.send_message("⏳ Max 2 per 12h.", ephemeral=True)
+        return await interaction.response.send_message("⏳ Max 2 per 11h.", ephemeral=True)
+
     battle_in_progress = True
     battle_participants.clear()
     msg = await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join within 11 hours.")
@@ -378,7 +390,7 @@ async def slash_startbattle(interaction: discord.Interaction):
     await msg.add_reaction("🔨")
 
     async def finish():
-        await asyncio.sleep(11 * 3600)
+        await asyncio.sleep(11 * 3600)  # 11 hours
         class Ctx:
             guild = interaction.guild
             send = interaction.channel.send
