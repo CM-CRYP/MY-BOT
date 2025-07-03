@@ -686,6 +686,16 @@ threading.Thread(
     daemon=True
 ).start()
 
+@bot.event
+async def on_ready():
+    if GUILD_ID:
+        await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"🔄 Slash commands synced for guild {GUILD_ID}")
+    else:
+        await bot.tree.sync()
+        print("🔄 Slash commands synced globally")
+
+
 # === Run the bot ===
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
