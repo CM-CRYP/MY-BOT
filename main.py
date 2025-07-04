@@ -190,21 +190,20 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
-        # Enregistre le groupe d’aventure avant le sync
-        self.tree.add_command(adventure_group)
-        # Sync des slash-commands
-        if GUILD_ID:
-            await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-            print(f"🔄 Slash-commands synchronisées pour le guild {GUILD_ID}")
-        else:
-            await self.tree.sync()
-            print("🔄 Slash-commands synchronisées globalement")
+        # 1) Enregistre ton groupe “adventure” **pour ce seul guild**
+        self.tree.add_command(adventure_group, guild=discord.Object(id=GUILD_ID))
+        # 2) Re-synchronise IMMEDIATEMENT côté serveur
+        await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"🔄 Adventure commands synced for guild {GUILD_ID}")
+
 
 bot = MyBot()
 
 @bot.event
 async def on_ready():
-    print(f"✅ Connecté en tant que {bot.user} ({bot.user.id})")
+    # (re)sync au cas où
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+    print(f"✅ Bot prêt — commandes slash synchronisées.")
 
 # === Réaction handlers pour battle signup ===
 @bot.event
