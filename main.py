@@ -3,37 +3,24 @@ import random
 import datetime
 import asyncio
 import threading
-import time
 import traceback
-import requests
-
 from dotenv import load_dotenv
 from flask import Flask
-
 import discord
 from discord import ui, ButtonStyle, app_commands
 from discord.ext import commands
 
-# === Load environment ===
+# === ENV ===
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 GUILD_OBJ = discord.Object(id=GUILD_ID)
 
 # === Globals ===
-credits: dict[int, int] = {}
-last_quiz_time: dict[int, datetime.datetime] = {}
-last_quest_time: dict[int, datetime.datetime] = {}
-last_battle_time: dict[int, list[datetime.datetime]] = {}
-battle_participants: list[int] = []
-signup_message_id: int | None = None
-battle_in_progress = False
-
-# === Adventure state ===
-ADVENTURE_CHANNEL_ID: int | None = None
-adventure_states: dict[int, dict] = {}
-last_adventure: dict[int, datetime.date] = {}
-
+credits, last_quiz_time, last_quest_time, last_battle_time = {}, {}, {}, {}
+battle_participants, signup_message_id, battle_in_progress = [], None, False
+ADVENTURE_CHANNEL_ID = None
+adventure_states, last_adventure = {}, {}
 
 # === Quiz questions (20 Yes / 20 No) ===
 quiz_questions = [
@@ -79,29 +66,14 @@ quiz_questions = [
     {"question": "Does MYIKKI use a centralized database to store project data? (Yes/No)", "answer": "No"},
 ]
 
-# === Quests & Battle Data ===
 quests = ["Inspect a window", "Certify a roof", "Upgrade the insulation", "Scan for mold"]
 building_types = [
-    "an old Parisian apartment building",
-    "an abandoned rural school",
-    "a crumbling medieval castle",
-    "a derelict industrial warehouse",
-    "a seaside lighthouse in disrepair",
-    "a solar-powered eco-village complex",
-    "a futuristic smart home prototype",
-    "a high-rise glass office tower",
-    "an underground subway tunnel station",
-    "a vintage Art Deco theater",
-    "a collapsing water treatment plant",
-    "an offshore oil rig platform",
-    "an abandoned amusement park pavilion",
-    "a restored Victorian row house",
-    "a geodesic dome greenhouse",
-    "a windmill farm control station",
-    "a derelict mountain chalet",
-    "a modern floating skyscraper model",
-    "a jungle treehouse research station",
-    "a heritage Gothic cathedral"
+    "an old Parisian apartment building", "an abandoned rural school", "a crumbling medieval castle", "a derelict industrial warehouse",
+    "a seaside lighthouse in disrepair", "a solar-powered eco-village complex", "a futuristic smart home prototype",
+    "a high-rise glass office tower", "an underground subway tunnel station", "a vintage Art Deco theater",
+    "a collapsing water treatment plant", "an offshore oil rig platform", "an abandoned amusement park pavilion",
+    "a restored Victorian row house", "a geodesic dome greenhouse", "a windmill farm control station",
+    "a derelict mountain chalet", "a modern floating skyscraper model", "a jungle treehouse research station", "a heritage Gothic cathedral"
 ]
 event_messages = [
     "⚠️ A sudden downpour drenches the site—tools start slipping everywhere!",
@@ -152,30 +124,18 @@ malus_messages = [
     "{name} slipped on grease — -1 XP and loses their next action!"
 ]
 
-# === Helpers ===
-def add_credits(user_id: int, amount: int):
+def add_credits(user_id, amount):
     credits[user_id] = credits.get(user_id, 0) + amount
-
-def get_credits(user_id: int) -> int:
+def get_credits(user_id):
     return credits.get(user_id, 0)
+def is_admin(user):
+    return user.id == 865185894197887018 or any(r.name in ("Administrator", "Chief Discord Officer") for r in getattr(user, "roles", []))
 
-def is_admin(user: discord.User | discord.Member) -> bool:
-    return (
-        user.id == 865185894197887018
-        or any(r.name in ("Administrator", "Chief Discord Officer") for r in getattr(user, "roles", []))
-    )
-
-# === Keep-awake thread ===
-def keep_awake():
-    url = f"http://localhost:{os.getenv('PORT',8080)}/"
-    while True:
-        try:
-            requests.get(url, timeout=5)
-        except:
-            pass
-        time.sleep(60)
-
-threading.Thread(target=keep_awake, daemon=True).start()
+app = Flask(__name__)
+@app.route("/")
+def home():
+    return "I'm alive!"
+threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))), daemon=True).start()
 
 # === Text-Adventure definitions ===
 scenes: list[dict] = [
@@ -325,29 +285,28 @@ scenes: list[dict] = [
 ]
 
 class AdventureView(ui.View):
-    def __init__(self, user_id: int, choices: list[dict]):
+    def __init__(self, user_id, choices):
         super().__init__(timeout=120)
         self.user_id = user_id
         for i, c in enumerate(choices):
             btn = ui.Button(label=c["label"].split(" ",1)[1], style=ButtonStyle.primary, custom_id=str(i))
-            async def on_click(inter: discord.Interaction, idx=i):
+            async def on_click(inter, idx=i):
                 await handle_choice(inter, idx)
             btn.callback = on_click
             self.add_item(btn)
-
-    async def interaction_check(self, inter: discord.Interaction) -> bool:
+    async def interaction_check(self, inter):
         if inter.user.id != self.user_id:
             await inter.response.send_message("⛔ This isn’t your adventure.", ephemeral=True)
             return False
         return True
 
-async def send_scene(interaction: discord.Interaction, user_id: int):
+async def send_scene(interaction, user_id):
     st = adventure_states[user_id]
     sc = scenes[st["step"]]
     content = sc["text"] + "\n\n" + "\n".join(c["label"] for c in sc["choices"])
     await interaction.response.send_message(content, view=AdventureView(user_id, sc["choices"]))
 
-async def handle_choice(interaction: discord.Interaction, idx: int):
+async def handle_choice(interaction, idx):
     user_id = interaction.user.id
     st = adventure_states.get(user_id)
     if not st:
@@ -374,11 +333,10 @@ async def handle_choice(interaction: discord.Interaction, idx: int):
     content = next_sc["text"] + "\n\n" + "\n".join(c["label"] for c in next_sc["choices"])
     await interaction.response.edit_message(content=content, view=AdventureView(user_id, next_sc["choices"]))
 
-# === /adventure group (no guild in children!)
 adventure_group = app_commands.Group(name="adventure", description="MYIKKI text adventure")
 
 @adventure_group.command(name="start", description="Start your adventure (once per day)")
-async def adventure_start(interaction: discord.Interaction):
+async def adventure_start(interaction):
     uid = interaction.user.id
     today = (datetime.datetime.utcnow()+datetime.timedelta(hours=1)).date()
     if ADVENTURE_CHANNEL_ID and interaction.channel.id != ADVENTURE_CHANNEL_ID:
@@ -390,19 +348,18 @@ async def adventure_start(interaction: discord.Interaction):
     await send_scene(interaction, uid)
 
 @adventure_group.command(name="status", description="Show your adventure progress")
-async def adventure_status(interaction: discord.Interaction):
+async def adventure_status(interaction):
     st = adventure_states.get(interaction.user.id)
     if not st:
         return await interaction.response.send_message("❌ No adventure.", ephemeral=True)
     await interaction.response.send_message(f"🗺️ Scene {st['step']+1}/{len(scenes)} — XP: {st['xp']}", ephemeral=True)
 
 @adventure_group.command(name="end", description="Abandon your adventure")
-async def adventure_end(interaction: discord.Interaction):
+async def adventure_end(interaction):
     if interaction.user.id in adventure_states:
         del adventure_states[interaction.user.id]
         return await interaction.response.send_message("❌ Adventure abandoned.", ephemeral=True)
     return await interaction.response.send_message("❌ No adventure to abandon.", ephemeral=True)
-
 
 # === Bot setup ===
 class MyBot(commands.Bot):
@@ -414,10 +371,8 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
-        # Enregistre le groupe adventure en guild-only
         self.tree.add_command(adventure_group, guild=GUILD_OBJ)
-        synced = await self.tree.sync(guild=GUILD_OBJ)
-        print(f"🔄 {len(synced)} commandes synchronisées pour le guild {GUILD_ID}")
+        await self.tree.sync(guild=GUILD_OBJ)
 
 bot = MyBot()
 
@@ -425,17 +380,38 @@ bot = MyBot()
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
+@bot.event
+async def on_raw_reaction_add(payload):
+    global signup_message_id
+    if payload.user_id == bot.user.id: return
+    if not battle_in_progress or payload.message_id != signup_message_id: return
+    if str(payload.emoji) == "🔨":
+        credits.setdefault(payload.user_id, 0)
+        if payload.user_id not in battle_participants:
+            battle_participants.append(payload.user_id)
+            chan = bot.get_channel(payload.channel_id)
+            usr = await bot.fetch_user(payload.user_id)
+            await chan.send(f"🧱 {usr.display_name} joined the battle!")
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    global signup_message_id
+    if payload.user_id == bot.user.id: return
+    if not battle_in_progress or payload.message_id != signup_message_id: return
+    if str(payload.emoji) == "🔨" and payload.user_id in battle_participants:
+        battle_participants.remove(payload.user_id)
+
 # === /quiz ===
 @bot.tree.command(name="quiz", description="Take your daily yes/no MYIKKI quiz")
 @discord.app_commands.guilds(GUILD_ID)
-async def slash_quiz(interaction: discord.Interaction):
+async def slash_quiz(interaction):
     now = datetime.datetime.utcnow()
     last = last_quiz_time.get(interaction.user.id)
     if last and (now - last).total_seconds() < 86400:
         return await interaction.response.send_message("⏳ Only once per 24h.", ephemeral=True)
     q = random.choice(quiz_questions)
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
-    def check(m: discord.Message):
+    def check(m):
         return (
             m.author.id == interaction.user.id and
             m.channel.id == interaction.channel.id and
@@ -455,7 +431,7 @@ async def slash_quiz(interaction: discord.Interaction):
 # === /quest ===
 @bot.tree.command(name="quest", description="Get your daily renovation quest")
 @discord.app_commands.guilds(GUILD_ID)
-async def slash_quest(interaction: discord.Interaction):
+async def slash_quest(interaction):
     now = datetime.datetime.utcnow()
     last = last_quest_time.get(interaction.user.id)
     if last and (now - last).total_seconds() < 86400:
@@ -466,28 +442,7 @@ async def slash_quest(interaction: discord.Interaction):
     last_quest_time[interaction.user.id] = now
     await interaction.response.send_message(f"🛠️ Quest: **{task}**\n✅ +{reward} XP")
 
-# === Battle signup reactions ===
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    global signup_message_id
-    if payload.user_id == bot.user.id: return
-    if not battle_in_progress or payload.message_id != signup_message_id: return
-    if str(payload.emoji) == "🔨":
-        credits.setdefault(payload.user_id, 0)
-        if payload.user_id not in battle_participants:
-            battle_participants.append(payload.user_id)
-            chan = bot.get_channel(payload.channel_id)
-            usr = await bot.fetch_user(payload.user_id)
-            await chan.send(f"🧱 {usr.display_name} joined the battle!")
-
-@bot.event
-async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    global signup_message_id
-    if payload.user_id == bot.user.id: return
-    if not battle_in_progress or payload.message_id != signup_message_id: return
-    if str(payload.emoji) == "🔨" and payload.user_id in battle_participants:
-        battle_participants.remove(payload.user_id)
-
+# === Battle system and commands ===
 async def run_battle(ctx):
     global battle_in_progress, signup_message_id
     try:
@@ -535,7 +490,6 @@ async def run_battle(ctx):
             await ctx.send("🧱 Remaining: " + ", ".join(left))
             await asyncio.sleep(3)
 
-        # Winner
         winner_id = survivors[0]
         add_credits(winner_id, 15)
         winner = await ctx.guild.fetch_member(winner_id)
@@ -559,10 +513,9 @@ async def run_battle(ctx):
         signup_message_id = None
         battle_participants.clear()
 
-# === /startfirstbattle ===
 @bot.tree.command(name="startfirstbattle", description="Admin: open 5m signup")
 @discord.app_commands.guilds(GUILD_ID)
-async def slash_startfirst(interaction: discord.Interaction):
+async def slash_startfirst(interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
@@ -580,10 +533,9 @@ async def slash_startfirst(interaction: discord.Interaction):
         await run_battle(Ctx())
     asyncio.create_task(finish())
 
-# === /startbattle ===
 @bot.tree.command(name="startbattle", description="Admin: open 11h signup rumble")
 @discord.app_commands.guilds(GUILD_ID)
-async def slash_startbattle(interaction: discord.Interaction):
+async def slash_startbattle(interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
@@ -608,44 +560,5 @@ async def slash_startbattle(interaction: discord.Interaction):
         await run_battle(Ctx())
     asyncio.create_task(finish())
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="/", intents=intents)
-
-@bot.event
-async def on_ready():
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} command(s).")
-        bot.tree.add_command(adventure_group)
-    except Exception as e:
-        print(f"⚠️ Sync failed: {e}")
-    print(f"🔗 Bot connected as {bot.user}")
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.message_id != signup_message_id or payload.emoji.name != "🔨":
-        return
-    if payload.user_id not in battle_participants:
-        battle_participants.append(payload.user_id)
-        guild = bot.get_guild(payload.guild_id)
-        member = guild.get_member(payload.user_id)
-        if member:
-            channel = guild.get_channel(payload.channel_id)
-            await channel.send(f"🧱 {member.display_name} joined the battle!")
-
-# === Flask keep-alive (pour Render ou Fly.io)
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "I'm alive!"
-
-threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))), daemon=True).start()
-
-# === Lancer le bot ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
