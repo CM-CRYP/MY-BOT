@@ -34,6 +34,7 @@ ADVENTURE_CHANNEL_ID: int | None = None
 adventure_states: dict[int, dict] = {}
 last_adventure: dict[int, datetime.date] = {}
 
+
 # === Quiz questions (20 Yes / 20 No) ===
 quiz_questions = [
     {"question": "Can you create a digital twin of a building with MYIKKI? (Yes/No)", "answer": "Yes"},
@@ -164,16 +165,14 @@ def is_admin(user: discord.User | discord.Member) -> bool:
         or any(r.name in ("Administrator", "Chief Discord Officer") for r in getattr(user, "roles", []))
     )
 
-async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
-    await asyncio.sleep(delay)
-    await member.remove_roles(role)
-
 # === Keep-awake thread ===
 def keep_awake():
     url = f"http://localhost:{os.getenv('PORT',8080)}/"
     while True:
-        try: requests.get(url, timeout=5)
-        except: pass
+        try:
+            requests.get(url, timeout=5)
+        except:
+            pass
         time.sleep(60)
 threading.Thread(target=keep_awake, daemon=True).start()
 
@@ -374,10 +373,11 @@ async def handle_choice(interaction: discord.Interaction, idx: int):
     content = next_sc["text"] + "\n\n" + "\n".join(c["label"] for c in next_sc["choices"])
     await interaction.response.edit_message(content=content, view=AdventureView(user_id, next_sc["choices"]))
 
-# === /adventure group ===
+# === /adventure slash-group ===
 adventure_group = app_commands.Group(name="adventure", description="MYIKKI text adventure")
 
 @adventure_group.command(name="start", description="Start your adventure (once per day)")
+@discord.app_commands.guilds(GUILD_ID)
 async def adventure_start(interaction: discord.Interaction):
     uid = interaction.user.id
     today = (datetime.datetime.utcnow()+datetime.timedelta(hours=1)).date()
@@ -390,6 +390,7 @@ async def adventure_start(interaction: discord.Interaction):
     await send_scene(interaction, uid)
 
 @adventure_group.command(name="status", description="Show your adventure progress")
+@discord.app_commands.guilds(GUILD_ID)
 async def adventure_status(interaction: discord.Interaction):
     st = adventure_states.get(interaction.user.id)
     if not st:
@@ -397,6 +398,7 @@ async def adventure_status(interaction: discord.Interaction):
     await interaction.response.send_message(f"🗺️ Scene {st['step']+1}/{len(scenes)} — XP: {st['xp']}", ephemeral=True)
 
 @adventure_group.command(name="end", description="Abandon your adventure")
+@discord.app_commands.guilds(GUILD_ID)
 async def adventure_end(interaction: discord.Interaction):
     if interaction.user.id in adventure_states:
         del adventure_states[interaction.user.id]
@@ -425,7 +427,8 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
 # === /quiz ===
-@bot.tree.command(name="quiz", description="Take your daily yes/no MYIKKI quiz", guild_ids=[GUILD_ID])
+@bot.tree.command(name="quiz", description="Take your daily yes/no MYIKKI quiz")
+@discord.app_commands.guilds(GUILD_ID)
 async def slash_quiz(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quiz_time.get(interaction.user.id)
@@ -435,23 +438,24 @@ async def slash_quiz(interaction: discord.Interaction):
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
     def check(m: discord.Message):
         return (
-            m.author.id == interaction.user.id
-            and m.channel.id == interaction.channel.id
-            and m.content.lower().strip() in ("yes","no")
+            m.author.id == interaction.user.id and
+            m.channel.id == interaction.channel.id and
+            m.content.lower().strip() in ("yes","no")
         )
     try:
         m = await bot.wait_for("message", timeout=30, check=check)
         if m.content.lower().strip() == q["answer"].lower():
             add_credits(interaction.user.id, 5)
             last_quiz_time[interaction.user.id] = now
-            await interaction.followup.send(f"✅ Correct! +5 XP")
+            await interaction.followup.send("✅ Correct! +5 XP")
         else:
             await interaction.followup.send("❌ Incorrect. Try again tomorrow!")
     except asyncio.TimeoutError:
         await interaction.followup.send("⌛ Time’s up! (30s)")
 
 # === /quest ===
-@bot.tree.command(name="quest", description="Get your daily renovation quest", guild_ids=[GUILD_ID])
+@bot.tree.command(name="quest", description="Get your daily renovation quest")
+@discord.app_commands.guilds(GUILD_ID)
 async def slash_quest(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quest_time.get(interaction.user.id)
@@ -470,7 +474,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id: return
     if not battle_in_progress or payload.message_id != signup_message_id: return
     if str(payload.emoji) == "🔨":
-        credits.setdefault(payload.user_id,0)
+        credits.setdefault(payload.user_id, 0)
         if payload.user_id not in battle_participants:
             battle_participants.append(payload.user_id)
             chan = bot.get_channel(payload.channel_id)
@@ -532,6 +536,7 @@ async def run_battle(ctx):
             await ctx.send("🧱 Remaining: " + ", ".join(left))
             await asyncio.sleep(3)
 
+        # Winner
         winner_id = survivors[0]
         add_credits(winner_id, 15)
         winner = await ctx.guild.fetch_member(winner_id)
@@ -556,7 +561,8 @@ async def run_battle(ctx):
         battle_participants.clear()
 
 # === /startfirstbattle ===
-@bot.tree.command(name="startfirstbattle", description="Admin: open 5 min signup", guild_ids=[GUILD_ID])
+@bot.tree.command(name="startfirstbattle", description="Admin: open 5m signup")
+@discord.app_commands.guilds(GUILD_ID)
 async def slash_startfirst(interaction: discord.Interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
@@ -576,7 +582,8 @@ async def slash_startfirst(interaction: discord.Interaction):
     asyncio.create_task(finish())
 
 # === /startbattle ===
-@bot.tree.command(name="startbattle", description="Admin: open 11 h signup rumble", guild_ids=[GUILD_ID])
+@bot.tree.command(name="startbattle", description="Admin: open 11h signup rumble")
+@discord.app_commands.guilds(GUILD_ID)
 async def slash_startbattle(interaction: discord.Interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
@@ -589,10 +596,10 @@ async def slash_startbattle(interaction: discord.Interaction):
         if (now - t).total_seconds() < 11*3600
     ]
     if len(window) >= 2:
-        return await interaction.response.send_message("⏳ Max 2 per 11 h.", ephemeral=True)
+        return await interaction.response.send_message("⏳ Max 2 per 11h.", ephemeral=True)
     battle_in_progress = True
     battle_participants.clear()
-    msg = await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join in 11 h.")
+    msg = await interaction.response.send_message("🚨 RUMBLE: React 🔨 to join in 11h.")
     msg = await interaction.original_response()
     signup_message_id = msg.id
     await msg.add_reaction("🔨")
