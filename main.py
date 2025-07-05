@@ -174,6 +174,7 @@ def keep_awake():
         except:
             pass
         time.sleep(60)
+
 threading.Thread(target=keep_awake, daemon=True).start()
 
 # === Text-Adventure definitions ===
@@ -373,11 +374,10 @@ async def handle_choice(interaction: discord.Interaction, idx: int):
     content = next_sc["text"] + "\n\n" + "\n".join(c["label"] for c in next_sc["choices"])
     await interaction.response.edit_message(content=content, view=AdventureView(user_id, next_sc["choices"]))
 
-# === /adventure slash-group ===
+# === /adventure group (no guild in children!)
 adventure_group = app_commands.Group(name="adventure", description="MYIKKI text adventure")
 
 @adventure_group.command(name="start", description="Start your adventure (once per day)")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_start(interaction: discord.Interaction):
     uid = interaction.user.id
     today = (datetime.datetime.utcnow()+datetime.timedelta(hours=1)).date()
@@ -390,7 +390,6 @@ async def adventure_start(interaction: discord.Interaction):
     await send_scene(interaction, uid)
 
 @adventure_group.command(name="status", description="Show your adventure progress")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_status(interaction: discord.Interaction):
     st = adventure_states.get(interaction.user.id)
     if not st:
@@ -398,12 +397,12 @@ async def adventure_status(interaction: discord.Interaction):
     await interaction.response.send_message(f"🗺️ Scene {st['step']+1}/{len(scenes)} — XP: {st['xp']}", ephemeral=True)
 
 @adventure_group.command(name="end", description="Abandon your adventure")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_end(interaction: discord.Interaction):
     if interaction.user.id in adventure_states:
         del adventure_states[interaction.user.id]
         return await interaction.response.send_message("❌ Adventure abandoned.", ephemeral=True)
     return await interaction.response.send_message("❌ No adventure to abandon.", ephemeral=True)
+
 
 # === Bot setup ===
 class MyBot(commands.Bot):
@@ -609,18 +608,44 @@ async def slash_startbattle(interaction: discord.Interaction):
         await run_battle(Ctx())
     asyncio.create_task(finish())
 
-# === Keep-alive endpoint & run ===
-app = Flask("")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="/", intents=intents)
+
+@bot.event
+async def on_ready():
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} command(s).")
+        bot.tree.add_command(adventure_group)
+    except Exception as e:
+        print(f"⚠️ Sync failed: {e}")
+    print(f"🔗 Bot connected as {bot.user}")
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.message_id != signup_message_id or payload.emoji.name != "🔨":
+        return
+    if payload.user_id not in battle_participants:
+        battle_participants.append(payload.user_id)
+        guild = bot.get_guild(payload.guild_id)
+        member = guild.get_member(payload.user_id)
+        if member:
+            channel = guild.get_channel(payload.channel_id)
+            await channel.send(f"🧱 {member.display_name} joined the battle!")
+
+# === Flask keep-alive (pour Render ou Fly.io)
+app = Flask(__name__)
+
 @app.route("/")
 def home():
     return "I'm alive!"
 
-threading.Thread(
-    target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT",8080))),
-    daemon=True
-).start()
+threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))), daemon=True).start()
 
+# === Lancer le bot ===
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        raise RuntimeError("DISCORD_TOKEN not set.")
     bot.run(DISCORD_TOKEN)
