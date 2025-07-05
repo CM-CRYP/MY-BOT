@@ -131,7 +131,7 @@ bonus_messages = [
     "{name} deployed a temporary shield wall — skips the next event unscathed!",
     "{name} discovered a hidden crawlspace — advances directly to the next round!",
     "{name} found a rapid-repair kit — +4 XP and fully patched for what’s next!",
-    "{name} reinforced the floor with steel beams — avoids any collapse this round!",
+    "{name} reinforced the floor with steel beams — avoids any collapse this round!",  
     "{name} calibrated their drone camera — perfect vision for the next elimination (safe)!",
     "{name} stumbled upon extra scaffolding — +3 XP and climbs ahead of the pack!",
     "{name} donned magnetic boots — won’t slip on any spilled materials next round!",
@@ -163,6 +163,10 @@ def is_admin(user: discord.User | discord.Member) -> bool:
         user.id == 865185894197887018
         or any(r.name in ("Administrator", "Chief Discord Officer") for r in getattr(user, "roles", []))
     )
+
+async def remove_role_later(member: discord.Member, role: discord.Role, delay: int):
+    await asyncio.sleep(delay)
+    await member.remove_roles(role)
 
 # === Keep-awake thread ===
 def keep_awake():
@@ -374,7 +378,6 @@ async def handle_choice(interaction: discord.Interaction, idx: int):
 adventure_group = app_commands.Group(name="adventure", description="MYIKKI text adventure")
 
 @adventure_group.command(name="start", description="Start your adventure (once per day)")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_start(interaction: discord.Interaction):
     uid = interaction.user.id
     today = (datetime.datetime.utcnow()+datetime.timedelta(hours=1)).date()
@@ -387,7 +390,6 @@ async def adventure_start(interaction: discord.Interaction):
     await send_scene(interaction, uid)
 
 @adventure_group.command(name="status", description="Show your adventure progress")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_status(interaction: discord.Interaction):
     st = adventure_states.get(interaction.user.id)
     if not st:
@@ -395,7 +397,6 @@ async def adventure_status(interaction: discord.Interaction):
     await interaction.response.send_message(f"🗺️ Scene {st['step']+1}/{len(scenes)} — XP: {st['xp']}", ephemeral=True)
 
 @adventure_group.command(name="end", description="Abandon your adventure")
-@discord.app_commands.guilds(GUILD_ID)
 async def adventure_end(interaction: discord.Interaction):
     if interaction.user.id in adventure_states:
         del adventure_states[interaction.user.id]
@@ -412,9 +413,8 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
-        # Enregistre le groupe aventure
+        # Enregistre le groupe adventure en guild-only
         self.tree.add_command(adventure_group, guild=GUILD_OBJ)
-        # Sync de toutes les slash-commands sur TON guild
         synced = await self.tree.sync(guild=GUILD_OBJ)
         print(f"🔄 {len(synced)} commandes synchronisées pour le guild {GUILD_ID}")
 
@@ -425,7 +425,7 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
 # === /quiz ===
-@bot.tree.command(name="quiz", description="Take your daily yes/no MYIKKI quiz", guild=GUILD_OBJ)
+@bot.tree.command(name="quiz", description="Take your daily yes/no MYIKKI quiz", guild_ids=[GUILD_ID])
 async def slash_quiz(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quiz_time.get(interaction.user.id)
@@ -435,9 +435,9 @@ async def slash_quiz(interaction: discord.Interaction):
     await interaction.response.send_message(f"🧠 Quiz: **{q['question']}**")
     def check(m: discord.Message):
         return (
-            m.author.id == interaction.user.id and
-            m.channel.id == interaction.channel.id and
-            m.content.lower().strip() in ("yes","no")
+            m.author.id == interaction.user.id
+            and m.channel.id == interaction.channel.id
+            and m.content.lower().strip() in ("yes","no")
         )
     try:
         m = await bot.wait_for("message", timeout=30, check=check)
@@ -451,7 +451,7 @@ async def slash_quiz(interaction: discord.Interaction):
         await interaction.followup.send("⌛ Time’s up! (30s)")
 
 # === /quest ===
-@bot.tree.command(name="quest", description="Get your daily renovation quest", guild=GUILD_OBJ)
+@bot.tree.command(name="quest", description="Get your daily renovation quest", guild_ids=[GUILD_ID])
 async def slash_quest(interaction: discord.Interaction):
     now = datetime.datetime.utcnow()
     last = last_quest_time.get(interaction.user.id)
@@ -485,7 +485,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     if str(payload.emoji) == "🔨" and payload.user_id in battle_participants:
         battle_participants.remove(payload.user_id)
 
-# === Battle logic ===
 async def run_battle(ctx):
     global battle_in_progress, signup_message_id
     try:
@@ -557,7 +556,7 @@ async def run_battle(ctx):
         battle_participants.clear()
 
 # === /startfirstbattle ===
-@bot.tree.command(name="startfirstbattle", description="Admin: open 5 min signup", guild=GUILD_OBJ)
+@bot.tree.command(name="startfirstbattle", description="Admin: open 5 min signup", guild_ids=[GUILD_ID])
 async def slash_startfirst(interaction: discord.Interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
@@ -577,7 +576,7 @@ async def slash_startfirst(interaction: discord.Interaction):
     asyncio.create_task(finish())
 
 # === /startbattle ===
-@bot.tree.command(name="startbattle", description="Admin: open 11 h signup rumble", guild=GUILD_OBJ)
+@bot.tree.command(name="startbattle", description="Admin: open 11 h signup rumble", guild_ids=[GUILD_ID])
 async def slash_startbattle(interaction: discord.Interaction):
     global battle_in_progress, signup_message_id
     if not is_admin(interaction.user):
@@ -608,6 +607,7 @@ app = Flask("")
 @app.route("/")
 def home():
     return "I'm alive!"
+
 threading.Thread(
     target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT",8080))),
     daemon=True
