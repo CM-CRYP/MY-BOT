@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="icon" href="/static/icons/icon.svg" />
+  <title>Crypto Signal App</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    .wrap { max-width: 1100px; margin: 30px auto; padding: 0 16px; }
+    .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 8px; flex-wrap: wrap; }
+    .badge { background: #1e293b; border-radius: 999px; padding: 6px 12px; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 16px; }
+    .card { background: #111827; border-radius: 14px; padding: 16px; border: 1px solid #334155; }
+    .buy { border-color: #16a34a; }
+    .sell { border-color: #dc2626; }
+    .wait { border-color: #475569; }
+    h2 { margin: 0 0 10px 0; }
+    .muted { color: #94a3b8; font-size: 14px; }
+    .big { font-size: 22px; font-weight: bold; margin: 10px 0; }
+    .row { display: flex; justify-content: space-between; margin: 6px 0; gap: 12px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    button, a.btn { background:#2563eb; color:white; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; text-decoration: none; }
+    .ghost { background:#334155; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #334155; padding: 8px; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>📈 Signal Assistant (BTC/ETH)</h1>
+      <div class="actions">
+        <span class="badge">Timeframe: {{ interval }}</span>
+        <span class="badge">Capital: ${{ capital }}</span>
+        <span class="badge">Mode: {{ mode }}</span>
+        <span class="badge">Quiet UTC: {{ quiet_hours }}</span>
+        <button id="notifBtn">Activer notifications</button>
+        <button id="installBtn" class="ghost">Installer sur mobile</button>
+        <a href="/api/export.csv" class="btn ghost">Exporter CSV</a>
+      </div>
+    </div>
+
+    <p class="muted">Les prix viennent d'Internet via Hyperliquid API en direct (polling régulier). L'app calcule seule les signaux et t'alerte.</p>
+    <p class="muted" id="sourceInfo"></p>
+
+    <div id="cards" class="grid"></div>
+
+    <h3>Historique récent des signaux</h3>
+    <table>
+      <thead>
+      <tr><th>Date UTC</th><th>Coin</th><th>Action</th><th>Score</th><th>Entry</th><th>SL</th><th>TP</th><th>Qty</th></tr>
+      </thead>
+      <tbody id="historyBody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    let lastSignalKey = {};
+    let deferredPrompt = null;
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/static/sw.js').catch(console.error);
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      document.getElementById('installBtn').style.display = 'inline-block';
+    });
+
+    document.getElementById('installBtn').onclick = async () => {
+      if (!deferredPrompt) {
+        alert('Sur Android Chrome: menu > Ajouter à l’écran d’accueil.');
+        return;
+      }
+      deferredPrompt.prompt();
+      deferredPrompt = null;
+    };
+
+    function tone() {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.value = 0.06;
+      o.start();
+      setTimeout(() => o.stop(), 240);
+    }
+
+    function notify(title, body) {
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body });
+        tone();
+      }
+    }
+
+    document.getElementById('notifBtn').onclick = async () => {
+      if (Notification.permission !== 'granted') {
+        await Notification.requestPermission();
+      }
+      alert('Notifications activées si ton navigateur les autorise.');
+    };
+
+    function cardClass(action) {
+      if (action === 'BUY') return 'card buy';
+      if (action === 'SELL') return 'card sell';
+      return 'card wait';
+    }
+
+    function renderPair(p) {
+      const actionEmoji = p.action === 'BUY' ? '🟢' : (p.action === 'SELL' ? '🔴' : '⏸️');
+      return `
+      <div class="${cardClass(p.action)}">
+        <h2>${p.coin}</h2>
+        <div class="big">${actionEmoji} ${p.action} (${p.score ?? 0}/100)</div>
+        <div class="muted">${p.reason || ''}</div>
+        <div class="row"><span>Entrée</span><strong>${p.entry ?? '-'}</strong></div>
+        <div class="row"><span>SL</span><strong>${p.stop_loss ?? '-'}</strong></div>
+        <div class="row"><span>TP</span><strong>${p.take_profit ?? '-'}</strong></div>
+        <div class="row"><span>Taille (coin)</span><strong>${p.qty_coin ?? '-'}</strong></div>
+        <div class="row"><span>Risque USD</span><strong>${p.risk_usd ?? '-'}</strong></div>
+        <div class="row"><span>RSI</span><strong>${p.rsi ?? '-'}</strong></div>
+      </div>`;
+    }
+
+    function renderHistory(rows) {
+      const body = document.getElementById('historyBody');
+      body.innerHTML = rows.slice().reverse().slice(0, 25).map(r =>
+        `<tr>
+          <td>${r.created_at_utc}</td>
+          <td>${r.coin}</td>
+          <td>${r.action}</td>
+          <td>${r.score}</td>
+          <td>${r.entry}</td>
+          <td>${r.stop_loss}</td>
+          <td>${r.take_profit}</td>
+          <td>${r.qty_coin}</td>
+        </tr>`
+      ).join('');
+    }
+
+    async function refreshHistory() {
+      try {
+        const r = await fetch('/api/history');
+        const data = await r.json();
+        renderHistory(data.history || []);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch('/api/signals');
+        const data = await r.json();
+        document.getElementById('sourceInfo').textContent = `Source: ${data.internet_source || '-'} | MAJ: ${data.updated_at_utc || '-'}`;
+        const cards = document.getElementById('cards');
+        cards.innerHTML = data.pairs.map(renderPair).join('');
+
+        data.pairs.forEach(p => {
+          if (!['BUY','SELL'].includes(p.action)) return;
+          const key = `${p.coin}-${p.action}-${p.last_ts}`;
+          if (lastSignalKey[p.coin] !== key) {
+            lastSignalKey[p.coin] = key;
+            notify(`Signal ${p.coin}: ${p.action}`, `Score ${p.score}/100 | Entrée ${p.entry} | SL ${p.stop_loss} | TP ${p.take_profit}`);
+          }
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    refresh();
+    refreshHistory();
+    setInterval(refresh, 30000);
+    setInterval(refreshHistory, 45000);
+  </script>
+</body>
+</html>
